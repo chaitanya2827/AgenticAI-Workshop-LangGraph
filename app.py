@@ -4,9 +4,12 @@ import os
 import sys
 import io
 import traceback
+import html
+
 from typing import TypedDict, List, Optional
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -17,28 +20,26 @@ from langgraph.graph import StateGraph, START, END
 
 
 # ============================================================
-# FASTAPI APPLICATION
+# FASTAPI APP
 # ============================================================
 
 app = FastAPI(
-    title="LangGraph Agentic AI",
-    description="Developer, Tester and Manager Agent workflow",
-    version="1.0.0"
+    title="Agentic AI LangGraph",
+    description="Developer - Tester - Manager AI workflow",
+    version="1.0"
 )
 
-
-# Allow frontend / browser requests
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 
 
 # ============================================================
-# ENVIRONMENT / GEMINI API KEY
+# GEMINI API KEY
 # ============================================================
 
 api_key = os.getenv("GEMINI_API_KEY")
@@ -50,19 +51,19 @@ if not api_key:
 
 
 # ============================================================
-# LLM INITIALIZATION
+# GEMINI MODEL
 # ============================================================
 
-llm_flash = ChatGoogleGenerativeAI(
+llm = ChatGoogleGenerativeAI(
     model="gemini-3.1-flash-lite-preview",
     google_api_key=api_key
 )
 
-llm = llm_flash
+llm_flash = llm
 
 
 # ============================================================
-# STATE
+# LANGGRAPH STATE
 # ============================================================
 
 class CrewState(TypedDict):
@@ -73,29 +74,21 @@ class CrewState(TypedDict):
 
 
 # ============================================================
-# REQUEST / RESPONSE MODELS
+# REQUEST MODEL
 # ============================================================
 
 class TaskRequest(BaseModel):
     task: str
 
 
-class TaskResponse(BaseModel):
-    task: str
-    generated_code: str
-    test_cases: str
-    execution_output: str
-    report: str
-
-
 # ============================================================
-# TOOL 1 — RUN PYTHON CODE
+# TOOL: EXECUTE PYTHON CODE
 # ============================================================
 
 @tool
 def run_python_code(code: str) -> str:
     """
-    Execute generated Python code and return output or error.
+    Execute generated Python code and return the result.
     """
 
     if not isinstance(code, str):
@@ -143,27 +136,27 @@ def run_python_code(code: str) -> str:
 
 
 # ============================================================
-# TOOL 2 — GENERATE TEST CASES
+# TOOL: GENERATE TEST CASES
 # ============================================================
 
 @tool
 def generate_test_cases(task_description: str) -> str:
     """
-    Generate 3 to 5 test scenarios for a coding task.
+    Generate test cases for the coding task.
     """
 
     prompt = f"""
 You are a Senior QA Engineer.
 
 Generate 3 to 5 highly specific test scenarios
-for the following coding task:
+for this coding task:
 
 {task_description}
 
 Include:
-1. Normal test cases
-2. Edge cases
-3. Boundary cases where applicable
+- Normal cases
+- Edge cases
+- Boundary cases when applicable
 
 Return only a numbered list.
 """
@@ -171,92 +164,106 @@ Return only a numbered list.
     response = llm.invoke(prompt)
 
     if hasattr(response, "content"):
-        return str(response.content)
+        content = response.content
+
+        if isinstance(content, list):
+
+            parts = []
+
+            for item in content:
+
+                if isinstance(item, dict):
+                    parts.append(
+                        str(item.get("text", ""))
+                    )
+                else:
+                    parts.append(str(item))
+
+            return "\n".join(parts)
+
+        return str(content)
 
     return str(response)
 
 
 # ============================================================
-# NODE 1 — TASK INPUT
+# NODE 1: TASK INPUT
 # ============================================================
 
 def task_input_node(state: CrewState):
 
-    task = state["messages"][-1].content
-
     return {
-        "next_step": "developer",
-        "messages": state["messages"]
+        "messages": state["messages"],
+        "next_step": "developer"
     }
 
 
 # ============================================================
-# NODE 2 — DEVELOPER AGENT
+# NODE 2: DEVELOPER AGENT
 # ============================================================
 
 def real_time_developer(state: CrewState):
 
     task = state["messages"][-1].content
 
-    dev_prompt = f"""
+    prompt = f"""
 You are the Developer Agent.
 
-Write a clean Python program to solve this coding task:
+Solve this coding task:
 
 {task}
 
 Requirements:
-- Write valid Python code.
-- Keep the code simple and readable.
-- Do not include explanations.
-- Do not use Markdown.
-- Return ONLY the Python code.
+
+1. Write clean Python code.
+2. Make the code executable.
+3. Keep it simple and readable.
+4. Do not explain the code.
+5. Do not use Markdown.
+6. Return ONLY Python code.
+
+Coding task:
+{task}
 """
 
-    response = llm_flash.invoke(dev_prompt)
+    response = llm_flash.invoke(prompt)
 
     content = response.content
 
     if isinstance(content, list):
 
-        code_parts = []
+        parts = []
 
         for item in content:
 
             if isinstance(item, dict):
-
-                if "text" in item:
-                    code_parts.append(
-                        str(item["text"])
-                    )
-
-            else:
-
-                code_parts.append(
-                    str(item)
+                parts.append(
+                    str(item.get("text", ""))
                 )
+            else:
+                parts.append(str(item))
 
-        code_str = "\n".join(code_parts)
+        code = "\n".join(parts)
 
     else:
 
-        code_str = str(content)
+        code = str(content)
 
-    code_str = (
-        code_str
+    code = (
+        code
         .replace("```python", "")
         .replace("```", "")
         .strip()
     )
 
     return {
-        "code": code_str,
+        "code": code,
         "next_step": "tester"
     }
 
 
 # ============================================================
-# NODE 3 — TESTER AGENT
+# NODE 3: TESTER AGENT
 # ============================================================
 
 def real_time_tester(state: CrewState):
@@ -271,7 +278,7 @@ def real_time_tester(state: CrewState):
     )
 
     # Execute generated code
-    execution_result = run_python_code.invoke(
+    execution_output = run_python_code.invoke(
         {
             "code": code
         }
@@ -279,9 +286,10 @@ def real_time_tester(state: CrewState):
 
     report = (
         "### EXECUTION OUTPUT\n\n"
-        f"{execution_result}\n\n"
-        "### TEST SCENARIOS EVALUATED\n\n"
-        f"{test_cases}"
+        + execution_output
+        + "\n\n"
+        + "### TEST SCENARIOS EVALUATED\n\n"
+        + str(test_cases)
     )
 
     return {
@@ -291,10 +299,10 @@ def real_time_tester(state: CrewState):
 
 
 # ============================================================
-# NODE 4 — MANAGER
+# NODE 4: MANAGER
 # ============================================================
 
-def manager_decision_node(state: CrewState):
+def manager_node(state: CrewState):
 
     return {
         "next_step": "complete"
@@ -302,11 +310,10 @@ def manager_decision_node(state: CrewState):
 
 
 # ============================================================
-# GRAPH
+# BUILD LANGGRAPH
 # ============================================================
 
 workflow = StateGraph(CrewState)
-
 
 workflow.add_node(
     "task_input",
@@ -325,43 +332,29 @@ workflow.add_node(
 
 workflow.add_node(
     "manager",
-    manager_decision_node
+    manager_node
 )
 
-
-# START → TASK INPUT
 
 workflow.add_edge(
     START,
     "task_input"
 )
 
-
-# TASK INPUT → DEVELOPER
-
 workflow.add_edge(
     "task_input",
     "developer"
 )
-
-
-# DEVELOPER → TESTER
 
 workflow.add_edge(
     "developer",
     "tester"
 )
 
-
-# TESTER → MANAGER
-
 workflow.add_edge(
     "tester",
     "manager"
 )
-
-
-# MANAGER → END
 
 workflow.add_edge(
     "manager",
@@ -369,34 +362,563 @@ workflow.add_edge(
 )
 
 
-# Compile LangGraph
-
 rt_app = workflow.compile()
 
 
 # ============================================================
-# API ENDPOINTS
+# WEBPAGE
 # ============================================================
 
-@app.get("/")
-def home():
+HTML_PAGE = """
+<!DOCTYPE html>
 
-    return {
-        "status": "running",
-        "message": "LangGraph Agentic AI is running successfully!",
-        "docs": "/docs"
+<html>
+
+<head>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Agentic AI - LangGraph</title>
+
+<style>
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+
+    margin: 0;
+
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
+
+    background:
+        linear-gradient(
+            135deg,
+            #0f172a,
+            #1e293b
+        );
+
+    color: white;
+
+    min-height: 100vh;
+}
+
+
+.container {
+
+    width: 92%;
+
+    max-width: 1100px;
+
+    margin: auto;
+
+    padding: 40px 0;
+}
+
+
+.header {
+
+    text-align: center;
+
+    margin-bottom: 35px;
+}
+
+
+.header h1 {
+
+    font-size: 42px;
+
+    margin-bottom: 10px;
+}
+
+
+.header p {
+
+    color: #cbd5e1;
+
+    font-size: 17px;
+}
+
+
+.card {
+
+    background: rgba(
+        255,
+        255,
+        255,
+        0.07
+    );
+
+    border: 1px solid rgba(
+        255,
+        255,
+        255,
+        0.12
+    );
+
+    border-radius: 18px;
+
+    padding: 25px;
+
+    margin-bottom: 25px;
+
+    backdrop-filter: blur(10px);
+}
+
+
+label {
+
+    display: block;
+
+    margin-bottom: 10px;
+
+    font-weight: bold;
+
+    font-size: 16px;
+}
+
+
+textarea {
+
+    width: 100%;
+
+    min-height: 130px;
+
+    resize: vertical;
+
+    padding: 15px;
+
+    border-radius: 12px;
+
+    border: 1px solid #475569;
+
+    background: #0f172a;
+
+    color: white;
+
+    font-size: 15px;
+
+    outline: none;
+}
+
+
+textarea:focus {
+
+    border-color: #38bdf8;
+}
+
+
+button {
+
+    width: 100%;
+
+    margin-top: 18px;
+
+    padding: 15px;
+
+    border: none;
+
+    border-radius: 12px;
+
+    background:
+        linear-gradient(
+            90deg,
+            #2563eb,
+            #7c3aed
+        );
+
+    color: white;
+
+    font-size: 16px;
+
+    font-weight: bold;
+
+    cursor: pointer;
+}
+
+
+button:hover {
+
+    opacity: 0.9;
+}
+
+
+button:disabled {
+
+    opacity: 0.5;
+
+    cursor: not-allowed;
+}
+
+
+.loading {
+
+    display: none;
+
+    text-align: center;
+
+    padding: 20px;
+
+    color: #38bdf8;
+}
+
+
+.result {
+
+    display: none;
+}
+
+
+.section {
+
+    margin-top: 25px;
+}
+
+
+.section h3 {
+
+    margin-bottom: 10px;
+
+    color: #38bdf8;
+}
+
+
+pre {
+
+    background: #020617;
+
+    border: 1px solid #334155;
+
+    padding: 18px;
+
+    border-radius: 12px;
+
+    overflow-x: auto;
+
+    white-space: pre-wrap;
+
+    word-wrap: break-word;
+
+    color: #e2e8f0;
+
+    line-height: 1.5;
+}
+
+
+.status {
+
+    text-align: center;
+
+    color: #86efac;
+
+    margin-top: 15px;
+
+    font-weight: bold;
+}
+
+
+.footer {
+
+    text-align: center;
+
+    margin-top: 35px;
+
+    color: #94a3b8;
+
+    font-size: 13px;
+}
+
+</style>
+
+</head>
+
+
+<body>
+
+<div class="container">
+
+
+<div class="header">
+
+<h1>🤖 Agentic AI</h1>
+
+<p>
+LangGraph Developer → Tester → Manager Workflow
+</p>
+
+</div>
+
+
+<div class="card">
+
+<label>
+Enter your coding task
+</label>
+
+
+<textarea
+id="task"
+placeholder="Example: Write a Python program to find the largest number in a list..."
+></textarea>
+
+
+<button
+id="runButton"
+onclick="runAgent()"
+>
+
+🚀 Run Agent
+
+</button>
+
+
+<div
+class="loading"
+id="loading"
+>
+
+⏳ AI agents are working... Please wait.
+
+</div>
+
+</div>
+
+
+<div
+class="card result"
+id="result"
+>
+
+
+<div class="status">
+✅ Workflow completed successfully
+</div>
+
+
+<div class="section">
+
+<h3>🧑‍💻 Developer Agent — Generated Code</h3>
+
+<pre id="code"></pre>
+
+</div>
+
+
+<div class="section">
+
+<h3>🧪 Tester Agent — Test Cases</h3>
+
+<pre id="tests"></pre>
+
+</div>
+
+
+<div class="section">
+
+<h3>▶️ Execution Output</h3>
+
+<pre id="output"></pre>
+
+</div>
+
+
+<div class="section">
+
+<h3>📋 Manager Report</h3>
+
+<pre id="report"></pre>
+
+</div>
+
+
+</div>
+
+
+<div class="footer">
+
+Powered by FastAPI + LangGraph + Gemini
+
+</div>
+
+
+</div>
+
+
+<script>
+
+async function runAgent() {
+
+    const task =
+        document
+        .getElementById("task")
+        .value
+        .trim();
+
+    if (!task) {
+
+        alert(
+            "Please enter a coding task."
+        );
+
+        return;
     }
 
+
+    const button =
+        document
+        .getElementById("runButton");
+
+    const loading =
+        document
+        .getElementById("loading");
+
+    const result =
+        document
+        .getElementById("result");
+
+
+    button.disabled = true;
+
+    loading.style.display = "block";
+
+    result.style.display = "none";
+
+
+    try {
+
+        const response =
+            await fetch(
+                "/run",
+                {
+
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    body: JSON.stringify({
+                        task: task
+                    })
+
+                }
+            );
+
+
+        const data =
+            await response.json();
+
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.detail ||
+                "Something went wrong"
+            );
+
+        }
+
+
+        document
+            .getElementById("code")
+            .textContent =
+                data.generated_code;
+
+
+        document
+            .getElementById("tests")
+            .textContent =
+                data.test_cases;
+
+
+        document
+            .getElementById("output")
+            .textContent =
+                data.execution_output;
+
+
+        document
+            .getElementById("report")
+            .textContent =
+                data.report;
+
+
+        result.style.display =
+            "block";
+
+
+        result.scrollIntoView({
+            behavior: "smooth"
+        });
+
+
+    }
+
+    catch (error) {
+
+        alert(
+            "Error: " +
+            error.message
+        );
+
+    }
+
+    finally {
+
+        button.disabled = false;
+
+        loading.style.display =
+            "none";
+
+    }
+
+}
+
+</script>
+
+
+</body>
+
+</html>
+"""
+
+
+# ============================================================
+# HOME PAGE
+# ============================================================
+
+@app.get(
+    "/",
+    response_class=HTMLResponse
+)
+def home():
+
+    return HTML_PAGE
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
 
 @app.get("/health")
 def health():
 
     return {
-        "status": "healthy"
+        "status": "healthy",
+        "service": "Agentic AI LangGraph"
     }
 
 
-@app.post("/run", response_model=TaskResponse)
+# ============================================================
+# RUN LANGGRAPH
+# ============================================================
+
+@app.post("/run")
 def run_task(request: TaskRequest):
 
     task = request.task.strip()
@@ -404,43 +926,48 @@ def run_task(request: TaskRequest):
     if not task:
 
         return {
-            "task": "",
-            "generated_code": "",
-            "test_cases": "",
-            "execution_output": "Task cannot be empty.",
-            "report": "Please provide a coding task."
+            "error": "Task cannot be empty"
         }
 
-    # Initial state
+
     initial_state: CrewState = {
+
         "messages": [
             HumanMessage(
                 content=task
             )
         ],
+
         "next_step": "developer",
+
         "code": None,
+
         "report": None
+
     }
 
-    # Execute LangGraph
+
+    # Run LangGraph
+
     result = rt_app.invoke(
         initial_state
     )
 
-    # Extract generated code
+
     generated_code = result.get(
         "code",
         ""
     )
 
-    # Extract complete report
+
     report = result.get(
         "report",
         ""
     )
 
+
     # Extract execution output
+
     execution_output = ""
 
     if "### EXECUTION OUTPUT" in report:
@@ -458,7 +985,9 @@ def run_task(request: TaskRequest):
             .strip()
         )
 
+
     # Extract test cases
+
     test_cases = ""
 
     if "### TEST SCENARIOS EVALUATED" in report:
@@ -472,17 +1001,28 @@ def run_task(request: TaskRequest):
             .strip()
         )
 
-    return TaskResponse(
-        task=task,
-        generated_code=generated_code,
-        test_cases=test_cases,
-        execution_output=execution_output,
-        report=report
-    )
+
+    return {
+
+        "task": task,
+
+        "generated_code":
+            generated_code,
+
+        "test_cases":
+            test_cases,
+
+        "execution_output":
+            execution_output,
+
+        "report":
+            report
+
+    }
 
 
 # ============================================================
-# LOCAL DEVELOPMENT
+# START SERVER LOCALLY
 # ============================================================
 
 if __name__ == "__main__":
